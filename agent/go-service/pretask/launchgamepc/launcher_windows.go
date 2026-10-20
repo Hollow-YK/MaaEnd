@@ -105,8 +105,8 @@ func windowResponsive(hWnd unsafe.Pointer) bool {
 }
 
 // WM_CLOSE关启动器进程，强制结束兜底
-func closeLauncher(installDir string, launcherPID int) {
-	if installDir == "" && launcherPID <= 0 {
+func closeLauncher(installDir string, launcherPID uint32) {
+	if installDir == "" && launcherPID == 0 {
 		log.Warn().
 			Str("component", component).
 			Msg("launcher target unknown, skip closing")
@@ -182,7 +182,7 @@ func processAlive(pid uint32) (bool, error) {
 	return ret != 0, nil
 }
 
-func findLauncherProcesses(installDir string, launcherPID int) []launcherProcess {
+func findLauncherProcesses(installDir string, launcherPID uint32) []launcherProcess {
 	snapshot, _, _ := procCreateToolhelp32Snapshot.Call(th32csSnapProcess, 0)
 	if snapshot == invalidHandle {
 		log.Error().
@@ -201,23 +201,20 @@ func findLauncherProcesses(installDir string, launcherPID int) []launcherProcess
 	seen := make(map[uint32]struct{})
 	var targets []launcherProcess
 
-	if prefix != "" {
-		ok, _, _ := procProcess32FirstW.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
-		for ok != 0 {
-			name := windows.UTF16ToString(entry.ExeFile[:])
-			pid := entry.ProcessID
-			if pid != 0 && isLauncherProcessName(name) && processInDir(pid, prefix) {
+	ok, _, _ := procProcess32FirstW.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
+	for ok != 0 {
+		name := windows.UTF16ToString(entry.ExeFile[:])
+		pid := entry.ProcessID
+		if pid != 0 && isLauncherProcessName(name) {
+			_, duplicate := seen[pid]
+			matchedPID := launcherPID != 0 && pid == launcherPID
+			matchedDir := prefix != "" && processInDir(pid, prefix)
+			if !duplicate && (matchedPID || matchedDir) {
 				targets = append(targets, launcherProcess{pid: pid, name: name})
 				seen[pid] = struct{}{}
 			}
-			ok, _, _ = procProcess32NextW.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
 		}
-	}
-
-	if launcherPID > 0 {
-		if _, found := seen[uint32(launcherPID)]; !found {
-			targets = append(targets, launcherProcess{pid: uint32(launcherPID), name: launcherExeName})
-		}
+		ok, _, _ = procProcess32NextW.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
 	}
 	return targets
 }
@@ -264,9 +261,9 @@ func requestWindowClose(pid uint32) int {
 }
 
 func waitProcessExit(pid uint32, timeout time.Duration) bool {
-	handle, _, _ := procOpenProcess.Call(synchronize, 0, uintptr(pid))
+	handle, _, callErr := procOpenProcess.Call(synchronize, 0, uintptr(pid))
 	if handle == 0 {
-		return true
+		return callErr == windows.ERROR_INVALID_PARAMETER
 	}
 	defer procCloseHandle.Call(handle)
 

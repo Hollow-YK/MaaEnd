@@ -10,4 +10,4 @@ func waitGameReady(timeout time.Duration) bool {
 }
 
 // closeLauncher 仅在 Windows 上生效。
-func closeLauncher(installDir string, launcherPID int) {}
+func closeLauncher(installDir string, launcherPID uint32) {}

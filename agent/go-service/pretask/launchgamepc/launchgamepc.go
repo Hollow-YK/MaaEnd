@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -188,7 +189,7 @@ func Run(args []string) bool {
 
 	var (
 		launcherInstallDir string
-		launcherPID        int
+		launcherPID        uint32
 	)
 
 	if info.launchURL != "" {
@@ -290,19 +291,23 @@ func runLauncher(windowRegex *regexp.Regexp) bool {
 // startLauncherFromInstallDir 按任务设置或注册表找到安装目录并运行 Launcher.exe。
 // 启动器窗口已存在时直接复用，不再运行 Launcher.exe，避免启动器窗口进入异常状态。
 // 返回安装目录与本次拉起的 Launcher.exe PID（复用已有窗口时 PID 为 0），供关闭启动器使用。
-func startLauncherFromInstallDir(opts launchGamePCOptions, info launcherInfo) (string, int, bool) {
+func startLauncherFromInstallDir(opts launchGamePCOptions, info launcherInfo) (string, uint32, bool) {
 	if info.windowRegex != nil {
 		if _, ok := findWindow(launcherClassRegex, info.windowRegex); ok {
 			log.Info().
 				Str("component", component).
 				Str("title", info.windowRegex.String()).
 				Msg("launcher window already exists, reuse it")
+			// 未启用关闭启动器时无需定位安装目录，避免无关的注册表查找失败刷错误日志。
+			if opts.CloseLauncher != "Yes" {
+				return "", 0, true
+			}
 			dir, err := resolveInstallDir(opts, info)
 			if err != nil {
 				log.Warn().
 					Err(err).
 					Str("component", component).
-					Msg("failed to resolve launcher install directory, close launcher will match by process name")
+					Msg("failed to resolve launcher install directory, launcher will not be closed")
 			}
 			return dir, 0, true
 		}
@@ -445,7 +450,7 @@ func isProcessRunning(name, dirPrefix string) bool {
 	return false
 }
 
-func startLauncher(installDir string) (int, error) {
+func startLauncher(installDir string) (uint32, error) {
 	exePath := filepath.Join(installDir, launcherExeName)
 	if _, err := os.Stat(exePath); err != nil {
 		return 0, err
@@ -460,8 +465,13 @@ func startLauncher(installDir string) (int, error) {
 		Str("component", component).
 		Str("path", exePath).
 		Msg("launcher started")
+
 	pid := cmd.Process.Pid
-	return pid, cmd.Process.Release()
+	if pid <= 0 || uint64(pid) > math.MaxUint32 {
+		_ = cmd.Process.Release()
+		return 0, fmt.Errorf("unexpected launcher pid: %d", pid)
+	}
+	return uint32(pid), cmd.Process.Release()
 }
 
 // openLaunchURL 交给系统的协议处理程序打开链接；不经过 cmd，避免 & 被解析。
